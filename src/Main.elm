@@ -3,6 +3,7 @@ port module Main exposing (Model, Msg(..), init, main, update, view)
 import Browser
 import Bulma.CDN exposing (stylesheet)
 import Bulma.Columns exposing (column, columnModifiers, columns, columnsModifiers)
+import Bulma.Components exposing (card, cardContent, cardHeader, cardTitle)
 import Bulma.Elements exposing (TitleSize(..), box, button, buttonModifiers, notification, notificationWithDelete, title)
 import Bulma.Form
     exposing
@@ -20,7 +21,7 @@ import Bulma.Layout exposing (container)
 import Bulma.Modifiers exposing (Color(..), HorizontalAlignment(..))
 import Html exposing (Html, div, input, option, p, text)
 import Html.Attributes exposing (class, classList, placeholder, src, style, value)
-import Html.Events exposing (onClick, onInput)
+import Html.Events exposing (onClick, onInput, onMouseDown, onMouseUp)
 import Json.Decode exposing (int, string)
 import Json.Decode.Pipeline exposing (optional, required)
 import Json.Encode
@@ -136,6 +137,8 @@ type alias Model =
     , leftPanel : LeftPanel
     , formRoute : FormRoute
     , notification : Notification
+    , routeClickTime : Maybe Int
+    , clickedRoute : Maybe Route
     }
 
 
@@ -148,6 +151,8 @@ init =
       , leftPanel = ScoreCard
       , formRoute = emptyFormRoute
       , notification = emptyNotification
+      , routeClickTime = Nothing
+      , clickedRoute = Nothing
       }
     , Cmd.none
     )
@@ -170,6 +175,8 @@ type Msg
     | UpdateForm FormUpdateMsg
     | Tick Time.Posix
     | ClearNotification
+    | StartRouteClick Route
+    | StopRouteClick
 
 
 type FormUpdateMsg
@@ -194,7 +201,20 @@ update msg model =
             ( { model | userData = Maybe.Nothing, error = emptyError }, signOut () )
 
         Tick _ ->
-            ( tickNotification model, Cmd.none )
+            let
+                newModel =
+                    (tickNotification >> tickClickTime) model
+            in
+            case newModel.clickedRoute of
+                Nothing ->
+                    ( newModel, Cmd.none )
+
+                Just route ->
+                    if Maybe.withDefault 0 newModel.routeClickTime >= 1 then
+                        update (RouteLogged route) newModel
+
+                    else
+                        ( newModel, Cmd.none )
 
         ClearNotification ->
             ( { model | notification = emptyNotification }, Cmd.none )
@@ -256,6 +276,16 @@ update msg model =
             in
             ( { model | formRoute = updatedRoute }, updatedMsg )
 
+        StartRouteClick route ->
+            ( { model | routeClickTime = Just 0, clickedRoute = Just route }, Cmd.none )
+
+        StopRouteClick ->
+            ( { model | routeClickTime = Nothing, clickedRoute = Nothing }, Cmd.none )
+
+
+
+-- ( { model | routeClickTime = Just 0 }, Cmd.none )
+
 
 formUpdate : FormUpdateMsg -> Model -> ( FormRoute, Cmd msg )
 formUpdate msg model =
@@ -275,6 +305,23 @@ formUpdate msg model =
 
         SaveForm ->
             ( emptyFormRoute, updateRoute <| routeEncoder model route )
+
+
+tickClickTime : Model -> Model
+tickClickTime model =
+    { model
+        | routeClickTime =
+            model.routeClickTime
+                |> andThen (\x -> Just <| x + 1)
+
+        -- |> andThen
+        --     (\x ->
+        --         if x > 2 then
+        --             Nothing
+        --         else
+        --             Just x
+        --     )
+    }
 
 
 tickNotification : Model -> Model
@@ -340,28 +387,6 @@ loggedRouteEncoder model route =
 
                 Maybe.Nothing ->
                     Json.Encode.null
-          )
-        ]
-
-
-routeEncoder : Model -> FormRoute -> Json.Encode.Value
-routeEncoder model route =
-    Json.Encode.object
-        [ ( "routeId", Json.Encode.string route.id )
-        , ( "route"
-          , Json.Encode.object
-                [ ( "grade", Json.Encode.string route.grade )
-                , ( "points"
-                  , case String.toInt route.points of
-                        Just p ->
-                            Json.Encode.int p
-
-                        Nothing ->
-                            Json.Encode.int 0
-                  )
-                , ( "number", Json.Encode.int <| 1 + List.length model.routes )
-                , ( "name", Json.Encode.string route.name )
-                ]
           )
         ]
 
@@ -472,9 +497,30 @@ renderRoute : Route -> Html Msg
 renderRoute route =
     column columnModifiers
         [ class "is-one-fifth" ]
-        [ box
-            [ onClick <| RouteLogged route, class <| styleEncoder route.style, class "route-box" ]
-            [ text <| String.fromInt route.number, text " - ", text <| String.fromInt route.logCount ]
+        [ card [ onMouseDown (StartRouteClick route), onMouseUp StopRouteClick ]
+            [ cardHeader
+                [ class <| styleEncoder route.style
+                , class "route-box"
+                ]
+                [ cardTitle []
+                    [ title H6 [] [ text <| "#" ++ String.fromInt route.number ++ " - " ++ styleEncoder route.style ]
+                    ]
+                ]
+            , cardContent []
+                [ p [] [ text <| "Logged: " ++ String.fromInt route.logCount ]
+                , p []
+                    [ text <|
+                        "Points: "
+                            ++ (String.fromFloat <|
+                                    if route.logCount /= 0 then
+                                        toFloat route.points / toFloat route.logCount
+
+                                    else
+                                        toFloat route.points
+                               )
+                    ]
+                ]
+            ]
         ]
 
 
@@ -562,6 +608,28 @@ styleDecoder =
                     _ ->
                         Json.Decode.fail <| "unknown style: " ++ s
             )
+
+
+routeEncoder : Model -> FormRoute -> Json.Encode.Value
+routeEncoder model route =
+    Json.Encode.object
+        [ ( "routeId", Json.Encode.string route.id )
+        , ( "route"
+          , Json.Encode.object
+                [ ( "grade", Json.Encode.string route.grade )
+                , ( "points"
+                  , case String.toInt route.points of
+                        Just p ->
+                            Json.Encode.int p
+
+                        Nothing ->
+                            Json.Encode.int 0
+                  )
+                , ( "number", Json.Encode.int <| 1 + List.length model.routes )
+                , ( "name", Json.Encode.string route.name )
+                ]
+          )
+        ]
 
 
 styleEncoder : AscentStyle -> String
