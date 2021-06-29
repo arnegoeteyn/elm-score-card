@@ -510,14 +510,15 @@ renderRoute route =
                 [ p [] [ text <| "Logged: " ++ String.fromInt route.logCount ]
                 , p []
                     [ text <|
-                        "Points: "
-                            ++ (String.fromFloat <|
-                                    if route.logCount /= 0 then
-                                        toFloat route.points / toFloat route.logCount
+                        (String.fromFloat <|
+                            if route.logCount /= 0 then
+                                toFloat route.points / toFloat route.logCount
 
-                                    else
-                                        toFloat route.points
-                               )
+                            else
+                                toFloat route.points
+                        )
+                            ++ "/"
+                            ++ String.fromInt route.points
                     ]
                 ]
             ]
