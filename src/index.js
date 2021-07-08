@@ -24,10 +24,13 @@ function setUpLogsSnapshot(user, routes) {
   }
 
   unsubscribers.userRoutesUnsubscribe = db.collectionGroup('logs').where('uid', '==', user.uid).onSnapshot(docs => {
+    const getLockStatus = doc => doc.data().lockStatus ? doc.data().lockStatus : null;
+
     if (routes) {
       docs.forEach(doc => {
         const routeId = doc.ref.parent.parent.id
         routes[routeId].style = doc.data().style;
+        routes[routeId].lockStatus = getLockStatus(doc)
       }, error => console.log("Oei"));
 
       app.ports.receiveRoutes.send({
@@ -39,10 +42,10 @@ function setUpLogsSnapshot(user, routes) {
       console.log("Received new personal routes");
       docs.forEach(doc => {
         const routeId = doc.ref.parent.parent.id
-        console.log("routeupdate" + routeId)
         app.ports.receiveRouteUpdate.send({
           routeId: routeId,
-          style: doc.data().style
+          style: doc.data().style,
+          lockStatus: getLockStatus(doc)
         });
       }, error => console.log("Oei"));
     }
@@ -61,15 +64,34 @@ function setUpRoutesSnapShot(user) {
 
     docs.forEach(doc => {
       if (doc.data()) {
-        routesMap[doc.id] = { ...doc.data(), ...{ 'style': "none", 'id': doc.id } }
+        routesMap[doc.id] = { ...doc.data(), ...{ 'style': "none", 'lockStatus': "editable", 'id': doc.id } }
       }
     });
 
-    // app.ports.receiveRoutes.send({
-    //   routes: Object.values(routesMap)
-    // });
-
     setUpLogsSnapshot(user, routesMap);
+
+  })
+
+}
+
+function setUpRankingSnapshot() {
+  if (unsubscribers.rankingUnsubscribe) {
+    unsubscribers.rankingUnsubscribe();
+    unsubscribers.rankingUnsubscribe = null;
+  }
+
+
+  unsubscribers.rankingUnsubscribe = db.collection('users').orderBy('position').onSnapshot(docs => {
+    console.log("Received new ranking");
+
+
+
+    app.ports.receiveRanking.send({
+      ranking: docs.docs.map(user => {
+        const data = user.data();
+        return { id: user.id, position: data.position, routesClimbed: data.climbed, points: data.points, name: data.name }
+      })
+    });
 
   })
 
@@ -151,16 +173,18 @@ firebase.auth().onAuthStateChanged(user => {
       });
 
     setUpRoutesSnapShot(user);
+    setUpRankingSnapshot();
   }
 });
 
 
 app.ports.updateRouteLog.subscribe(data => {
   console.log(`logging route to database : ${data}`);
+  console.log(data);
 
   db.collection(`routes/${data.routeId}/logs`)
     .doc(data.uid).set(
-      { style: data.style, uid: data.uid }
+      { style: data.style, uid: data.uid, lockStatus: data.lockStatus }
     );
 });
 

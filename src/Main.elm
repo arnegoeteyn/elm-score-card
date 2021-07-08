@@ -3,7 +3,7 @@ port module Main exposing (Model, Msg(..), init, main, update, view)
 import Browser
 import Bulma.CDN exposing (stylesheet)
 import Bulma.Columns exposing (column, columnModifiers, columns, columnsModifiers)
-import Bulma.Components exposing (card, cardContent, cardHeader, cardTitle)
+import Bulma.Components exposing (card, cardContent, cardFooter, cardFooterItem, cardFooterItemLink, cardHeader, cardTitle)
 import Bulma.Elements exposing (TitleSize(..), box, button, buttonModifiers, notification, notificationWithDelete, title)
 import Bulma.Form
     exposing
@@ -11,22 +11,19 @@ import Bulma.Form
         , controlInput
         , controlInputModifiers
         , controlLabel
-        , controlModifiers
         , controlText
         , field
-        , help
-        , label
         )
 import Bulma.Layout exposing (container)
 import Bulma.Modifiers exposing (Color(..), HorizontalAlignment(..))
-import Html exposing (Html, div, input, option, p, text)
+import Html exposing (Html, a, div, input, option, p, text)
 import Html.Attributes exposing (class, classList, placeholder, src, style, value)
 import Html.Events exposing (onClick, onInput, onMouseDown, onMouseUp)
 import Json.Decode exposing (int, string)
 import Json.Decode.Pipeline exposing (optional, required)
 import Json.Encode
 import Maybe exposing (andThen)
-import Time exposing (every)
+import Time
 
 
 port signIn : () -> Cmd msg
@@ -45,6 +42,9 @@ port receiveRoutes : (Json.Encode.Value -> msg) -> Sub msg
 
 
 port receiveRouteUpdate : (Json.Encode.Value -> msg) -> Sub msg
+
+
+port receiveRanking : (Json.Encode.Value -> msg) -> Sub msg
 
 
 port updateRouteLog : Json.Encode.Value -> Cmd msg
@@ -79,16 +79,31 @@ nextAscentStyle style =
             RedPoint
 
 
+nextLockStatus : LockStatus -> LockStatus
+nextLockStatus lockStatus =
+    case lockStatus of
+        Locked ->
+            Editable
+
+        Editable ->
+            Locked
+
+
 type alias ErrorData =
     { code : Maybe String, message : Maybe String, credential : Maybe String }
 
 
+type UserPrivilege
+    = User
+    | Admin
+
+
 type alias UserData =
-    { token : String, email : String, uid : String }
+    { token : String, email : String, uid : String, privilege : UserPrivilege }
 
 
 type alias Route =
-    { id : String, name : String, grade : String, points : Int, number : Int, style : AscentStyle, logCount : Int }
+    { id : String, name : String, grade : String, points : Int, number : Int, style : AscentStyle, logCount : Int, lockStatus : LockStatus }
 
 
 type alias FormRoute =
@@ -116,7 +131,7 @@ defaultNotification =
 
 emptyRoute : Route
 emptyRoute =
-    { id = "", name = "", grade = "", points = 0, number = 0, style = RedPoint, logCount = 0 }
+    { id = "", name = "", grade = "", points = 0, number = 0, style = RedPoint, logCount = 0, lockStatus = Editable }
 
 
 emptyFormRoute : FormRoute
@@ -129,6 +144,20 @@ type LeftPanel
     | NewRoute
 
 
+type LockStatus
+    = Editable
+    | Locked
+
+
+type alias Ranking =
+    { id : String
+    , position : Int
+    , points : Int
+    , routesClimbed : Int
+    , name : String
+    }
+
+
 type alias Model =
     { userData : Maybe UserData
     , error : ErrorData
@@ -139,6 +168,7 @@ type alias Model =
     , notification : Notification
     , routeClickTime : Maybe Int
     , clickedRoute : Maybe Route
+    , ranking : List Ranking
     }
 
 
@@ -153,6 +183,7 @@ init =
       , notification = emptyNotification
       , routeClickTime = Nothing
       , clickedRoute = Nothing
+      , ranking = []
       }
     , Cmd.none
     )
@@ -169,14 +200,18 @@ type Msg
     | LoggedInError (Result Json.Decode.Error ErrorData)
     | RoutesReceived (Result Json.Decode.Error (List Route))
     | RouteUpdateReceived (Result Json.Decode.Error Route)
+    | RankingReceived (Result Json.Decode.Error (List Ranking))
     | NotificationReceived (Result Json.Decode.Error String)
-    | RouteLogged Route
     | SetLeftPanel LeftPanel
     | UpdateForm FormUpdateMsg
     | Tick Time.Posix
     | ClearNotification
-    | StartRouteClick Route
-    | StopRouteClick
+    | ModifyRouteMsg ModifyRouteMsg
+    | RouteLocked Route
+
+
+type ModifyRouteMsg
+    = RouteLogged Route
 
 
 type FormUpdateMsg
@@ -211,7 +246,7 @@ update msg model =
 
                 Just route ->
                     if Maybe.withDefault 0 newModel.routeClickTime >= 1 then
-                        update (RouteLogged route) newModel
+                        update (ModifyRouteMsg (RouteLogged route)) newModel
 
                     else
                         ( newModel, Cmd.none )
@@ -259,13 +294,6 @@ update msg model =
                 Err error ->
                     ( { model | error = messageToError <| Json.Decode.errorToString error }, Cmd.none )
 
-        RouteLogged route ->
-            let
-                ( updatedModel, updatedRoute ) =
-                    nextLogStatus model route
-            in
-            ( updatedModel, updateRouteLog <| loggedRouteEncoder model updatedRoute )
-
         SetLeftPanel leftPanel ->
             ( { model | leftPanel = leftPanel }, Cmd.none )
 
@@ -276,15 +304,51 @@ update msg model =
             in
             ( { model | formRoute = updatedRoute }, updatedMsg )
 
-        StartRouteClick route ->
-            ( { model | routeClickTime = Just 0, clickedRoute = Just route }, Cmd.none )
+        RankingReceived result ->
+            case result of
+                Ok ranking ->
+                    ( { model | ranking = ranking }, Cmd.none )
 
-        StopRouteClick ->
-            ( { model | routeClickTime = Nothing, clickedRoute = Nothing }, Cmd.none )
+                Err error ->
+                    ( { model | error = messageToError <| Json.Decode.errorToString error }, Cmd.none )
+
+        RouteLocked route ->
+            let
+                newRoute =
+                    { route | lockStatus = nextLockStatus route.lockStatus }
+            in
+            ( { model | routes = replaceRoute model.routes newRoute }, updateRouteCmd model newRoute )
+
+        ModifyRouteMsg modifyMsg ->
+            modifyRouteUpdate modifyMsg model
 
 
+ifNotLocked : (Route -> a) -> Route -> a -> a
+ifNotLocked f route default =
+    case route.lockStatus of
+        Locked ->
+            default
 
--- ( { model | routeClickTime = Just 0 }, Cmd.none )
+        Editable ->
+            f route
+
+
+updateRouteCmd : Model -> Route -> Cmd msg
+updateRouteCmd model updatedRoute =
+    updateRouteLog <| loggedRouteEncoder model updatedRoute
+
+
+modifyRouteUpdate : ModifyRouteMsg -> Model -> ( Model, Cmd msg )
+modifyRouteUpdate msg model =
+    case msg of
+        RouteLogged route ->
+            let
+                ( updatedModel, updatedRoute ) =
+                    ifNotLocked (nextLogStatus model) route ( model, route )
+            in
+            ( updatedModel
+            , ifNotLocked (\_ -> updateRouteCmd model updatedRoute) route Cmd.none
+            )
 
 
 formUpdate : FormUpdateMsg -> Model -> ( FormRoute, Cmd msg )
@@ -304,7 +368,7 @@ formUpdate msg model =
             ( { route | points = points }, Cmd.none )
 
         SaveForm ->
-            ( emptyFormRoute, updateRoute <| routeEncoder model route )
+            ( emptyFormRoute, updateRoute <| formRouteEncoder model route )
 
 
 tickClickTime : Model -> Model
@@ -313,14 +377,6 @@ tickClickTime model =
         | routeClickTime =
             model.routeClickTime
                 |> andThen (\x -> Just <| x + 1)
-
-        -- |> andThen
-        --     (\x ->
-        --         if x > 2 then
-        --             Nothing
-        --         else
-        --             Just x
-        --     )
     }
 
 
@@ -375,22 +431,6 @@ replaceRoute routes route =
                 :: replaceRoute latter route
 
 
-loggedRouteEncoder : Model -> Route -> Json.Encode.Value
-loggedRouteEncoder model route =
-    Json.Encode.object
-        [ ( "routeId", Json.Encode.string route.id )
-        , ( "style", Json.Encode.string <| styleEncoder route.style )
-        , ( "uid"
-          , case model.userData of
-                Just userData ->
-                    Json.Encode.string userData.uid
-
-                Maybe.Nothing ->
-                    Json.Encode.null
-          )
-        ]
-
-
 messageToError : String -> ErrorData
 messageToError message =
     { code = Maybe.Nothing, credential = Maybe.Nothing, message = Just message }
@@ -419,7 +459,19 @@ view model =
             [ columns columnsModifiers
                 []
                 [ renderLeftPanel model
-                , column columnModifiers [] [ title H2 [] [ text "Ranking" ] ]
+                , column columnModifiers
+                    []
+                    [ renderPersonalInformation model.userData
+                    , div [] [ title H2 [] [ text "Ranking" ] ]
+                    , div [] <|
+                        List.map
+                            (\ranking ->
+                                div []
+                                    [ text (String.fromInt ranking.position ++ " " ++ ranking.name ++ " " ++ String.fromInt ranking.points)
+                                    ]
+                            )
+                            model.ranking
+                    ]
                 ]
             , title H2 [] [ text <| errorPrinter model.error ]
             ]
@@ -438,7 +490,30 @@ logInButton =
 
 leftPanelSwitchButton : LeftPanel -> Html Msg
 leftPanelSwitchButton switchTo =
-    button buttonModifiers [ onClick <| SetLeftPanel switchTo ] [ text "x" ]
+    button buttonModifiers
+        [ onClick <| SetLeftPanel switchTo ]
+        [ text <|
+            case switchTo of
+                ScoreCard ->
+                    "x"
+
+                NewRoute ->
+                    "+"
+        ]
+
+
+renderPersonalInformation : Maybe UserData -> Html Msg
+renderPersonalInformation userData =
+    case userData of
+        Nothing ->
+            div [] []
+
+        Just user ->
+            div []
+                [ p [] [ text <| privilegeEncoder user.privilege ]
+                , p [] [ text user.email ]
+                , p [] [ text user.uid ]
+                ]
 
 
 renderLeftPanel : Model -> Html Msg
@@ -448,15 +523,24 @@ renderLeftPanel model =
     <|
         case model.leftPanel of
             ScoreCard ->
-                [ title H2 [] [ text "Score card", leftPanelSwitchButton NewRoute ]
+                [ renderTitle "Scorecard" NewRoute
                 , renderRoutes model.routes
                 ]
 
             NewRoute ->
-                [ title H2 [] [ text "New route", leftPanelSwitchButton ScoreCard ]
+                [ renderTitle "New route" ScoreCard
                 , renderRouteForm emptyFormRoute
                 , renderNotification model.notification
                 ]
+
+
+renderTitle : String -> LeftPanel -> Html Msg
+renderTitle titleString switchTo =
+    columns columnsModifiers
+        []
+        [ column columnModifiers [ class "is-four-fifths" ] [ title H2 [] [ text titleString ] ]
+        , column columnModifiers [ class "is-offset-1" ] [ leftPanelSwitchButton switchTo ]
+        ]
 
 
 renderRouteForm : FormRoute -> Html Msg
@@ -497,7 +581,7 @@ renderRoute : Route -> Html Msg
 renderRoute route =
     column columnModifiers
         [ class "is-one-fifth" ]
-        [ card [ onMouseDown (StartRouteClick route), onMouseUp StopRouteClick ]
+        [ card [ classList [ ( "grayout", route.lockStatus == Locked ) ] ]
             [ cardHeader
                 [ class <| styleEncoder route.style
                 , class "route-box"
@@ -521,6 +605,11 @@ renderRoute route =
                             ++ String.fromInt route.points
                     ]
                 ]
+            , cardFooter []
+                [ cardFooterItemLink [ onClick <| ModifyRouteMsg (RouteLogged route) ] [ text "log" ]
+                , cardFooterItemLink [] [ text "edit" ]
+                , cardFooterItemLink [ onClick <| RouteLocked route ] [ text "lock" ]
+                ]
             ]
         ]
 
@@ -535,6 +624,7 @@ userDataDecoder =
         |> Json.Decode.Pipeline.required "token" Json.Decode.string
         |> Json.Decode.Pipeline.required "email" Json.Decode.string
         |> Json.Decode.Pipeline.required "uid" Json.Decode.string
+        |> Json.Decode.Pipeline.optional "privilege" privilegeDecoder User
 
 
 logInErrorDecoder : Json.Decode.Decoder ErrorData
@@ -549,6 +639,12 @@ routeListDecoder : Json.Decode.Decoder (List Route)
 routeListDecoder =
     Json.Decode.succeed identity
         |> Json.Decode.Pipeline.required "routes" (Json.Decode.list routeDecoder)
+
+
+rankingListDecoder : Json.Decode.Decoder (List Ranking)
+rankingListDecoder =
+    Json.Decode.succeed identity
+        |> Json.Decode.Pipeline.required "ranking" (Json.Decode.list rankingDecoder)
 
 
 routeIdDecoder : Json.Decode.Decoder String
@@ -574,6 +670,16 @@ routeUpdateDecoder model =
             )
 
 
+rankingDecoder : Json.Decode.Decoder Ranking
+rankingDecoder =
+    Json.Decode.succeed Ranking
+        |> required "id" string
+        |> required "position" int
+        |> required "points" int
+        |> required "routesClimbed" int
+        |> required "name" string
+
+
 routeDecoder : Json.Decode.Decoder Route
 routeDecoder =
     updateRouteDecoder emptyRoute
@@ -589,6 +695,35 @@ updateRouteDecoder route =
         |> optional "number" int route.number
         |> optional "style" styleDecoder route.style
         |> optional "logCount" int route.logCount
+        |> optional "lockStatus" lockStatusDecoder route.lockStatus
+
+
+lockStatusDecoder : Json.Decode.Decoder LockStatus
+lockStatusDecoder =
+    Json.Decode.string
+        |> Json.Decode.andThen
+            (\s ->
+                case String.toLower s of
+                    "locked" ->
+                        Json.Decode.succeed Locked
+
+                    _ ->
+                        Json.Decode.succeed Editable
+            )
+
+
+privilegeDecoder : Json.Decode.Decoder UserPrivilege
+privilegeDecoder =
+    Json.Decode.string
+        |> Json.Decode.andThen
+            (\s ->
+                case String.toLower s of
+                    "admin" ->
+                        Json.Decode.succeed Admin
+
+                    _ ->
+                        Json.Decode.succeed User
+            )
 
 
 styleDecoder : Json.Decode.Decoder AscentStyle
@@ -611,8 +746,25 @@ styleDecoder =
             )
 
 
-routeEncoder : Model -> FormRoute -> Json.Encode.Value
-routeEncoder model route =
+loggedRouteEncoder : Model -> Route -> Json.Encode.Value
+loggedRouteEncoder model route =
+    Json.Encode.object
+        [ ( "routeId", Json.Encode.string route.id )
+        , ( "style", Json.Encode.string <| styleEncoder route.style )
+        , ( "lockStatus", Json.Encode.string <| lockStatusEncoder route.lockStatus )
+        , ( "uid"
+          , case model.userData of
+                Just userData ->
+                    Json.Encode.string userData.uid
+
+                Maybe.Nothing ->
+                    Json.Encode.null
+          )
+        ]
+
+
+formRouteEncoder : Model -> FormRoute -> Json.Encode.Value
+formRouteEncoder model route =
     Json.Encode.object
         [ ( "routeId", Json.Encode.string route.id )
         , ( "route"
@@ -633,6 +785,16 @@ routeEncoder model route =
         ]
 
 
+lockStatusEncoder : LockStatus -> String
+lockStatusEncoder lockStatus =
+    case lockStatus of
+        Locked ->
+            "locked"
+
+        Editable ->
+            "editable"
+
+
 styleEncoder : AscentStyle -> String
 styleEncoder style =
     case style of
@@ -646,6 +808,16 @@ styleEncoder style =
             "flash"
 
 
+privilegeEncoder : UserPrivilege -> String
+privilegeEncoder privilege =
+    case privilege of
+        Admin ->
+            "admin"
+
+        User ->
+            "user"
+
+
 
 ---- PROGRAM ----
 
@@ -657,6 +829,7 @@ subscriptions model =
         , signInError (Json.Decode.decodeValue logInErrorDecoder >> LoggedInError)
         , receiveRoutes (Json.Decode.decodeValue routeListDecoder >> RoutesReceived)
         , receiveRouteUpdate (Json.Decode.decodeValue (routeUpdateDecoder model) >> RouteUpdateReceived)
+        , receiveRanking (Json.Decode.decodeValue rankingListDecoder >> RankingReceived)
         , receiveNotification (Json.Decode.decodeValue Json.Decode.string >> NotificationReceived)
         , Time.every 1000 Tick
         ]
