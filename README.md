@@ -1,6 +1,8 @@
 Small project to create something of a '1000-points' score-card for climbing competitions.
 Everything works but it's more a proof of concept then something to actually be used.
 
+Based on https://github.com/jlengrand/elm-firebase
+
 ## Features  
 * Log a route
 * Auto-updating ranking
